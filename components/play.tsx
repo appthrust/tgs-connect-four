@@ -10,17 +10,26 @@ const errors: Record<string, string> = {
   bad_column: "Choose a column from 1 to 7.", match_not_found: "This match isn’t available on this server. Find a new match.",
 };
 
+function isFinished(status: MatchSnapshot["state"]["status"] | undefined): boolean {
+  return status === "won" || status === "draw";
+}
+
 export function Play({ matchId }: { matchId: string }) {
   const [match, setMatch] = useState<MatchSnapshot | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const mutation = useRef(false);
   const serial = useRef(0);
+  // Every poll is a `state` call on the match actor, which keeps it awake.
+  // Stop polling once the round is decided so an idle actor can go to sleep;
+  // "Play again" bumps the round to resume.
+  const [round, setRound] = useState(0);
 
   useEffect(() => {
     const controller = new AbortController();
     let timer: number;
     async function poll() {
+      let settled = false;
       if (!mutation.current) {
         const request = ++serial.current;
         try {
@@ -30,23 +39,32 @@ export function Play({ matchId }: { matchId: string }) {
             if (data.state) setMatch(data);
             if (!response.ok) setError(errors[data.error] || "The actor is unavailable. Reconnecting…");
             else setError("");
+            settled = isFinished(data.state?.status);
           }
         } catch { if (!controller.signal.aborted && request === serial.current) setError("Connection interrupted. Reconnecting…"); }
       }
-      if (!controller.signal.aborted) timer = window.setTimeout(poll, 800);
+      if (!controller.signal.aborted && !settled) timer = window.setTimeout(poll, 800);
     }
     void poll();
     return () => { controller.abort(); window.clearTimeout(timer); };
-  }, [matchId]);
+  }, [matchId, round]);
 
   async function act(method: "drop" | "reset", column?: number) {
     if (mutation.current) return;
     mutation.current = true; ++serial.current; setBusy(true); setError("");
     try {
+      if (method === "reset") {
+        // Polling stopped when the round ended, so the opponent may already
+        // have started the rematch. Re-read before wiping the board.
+        const current = await fetch(`/api/match/${matchId}`, { cache: "no-store" });
+        const data = await current.json();
+        if (current.ok && data.state && !isFinished(data.state.status)) { setMatch(data); setRound((value) => value + 1); return; }
+      }
       const response = await fetch(`/api/match/${matchId}/${method}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(method === "drop" ? { column } : {}) });
       const data = await response.json();
       if (data.state) setMatch(data);
       if (!response.ok) setError(errors[data.error] || "That move didn’t go through. Please try again.");
+      else if (method === "reset") setRound((value) => value + 1);
     } catch { setError("Connection interrupted. Checking the board before your next move…"); }
     finally { mutation.current = false; setBusy(false); }
   }
@@ -62,7 +80,7 @@ export function Play({ matchId }: { matchId: string }) {
   if (state.status === "won") { title = state.winner === seat ? "That’s four. You win!" : `${winner} connects four!`; subtitle = "Good game. One more round?"; }
   if (state.status === "draw") { title = "A perfect standoff."; subtitle = "It’s a draw. Time for a rematch."; }
   if (state.status === "waiting") { title = "Waiting for player two…"; subtitle = "Your actor is ready."; }
-  const finished = state.status === "won" || state.status === "draw";
+  const finished = isFinished(state.status);
 
   return <main className="play-layout">
     <section className="game-area" aria-label="Your match">
