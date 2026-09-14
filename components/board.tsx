@@ -19,7 +19,7 @@ export function Board({ state, seat = 0, onDrop, disabled = false, mini = false 
         const win = state.winningCells.some(([r, c]) => r === row && c === column);
         const last = cell !== 0 && state.lastMove?.row === row && state.lastMove.column === column;
         return <div className={`socket ${preview === column && playable ? "preview-column" : ""}`} key={`${row}-${column}`}>
-          {cell !== 0 && <span key={`${row}-${column}-${cell}`} className={`token seat-${cell} ${win ? "winning" : ""} ${last && !mini ? "last-drop" : ""}`} style={{ "--drop-distance": `${-(6 - row) * 115}%` } as CSSProperties}>
+          {cell !== 0 && <span key={`${row}-${column}-${cell}`} className={`token seat-${cell} ${win ? "winning" : ""} ${last ? "last-drop" : ""}`} style={{ "--drop-distance": `${-(6 - row) * 115}%` } as CSSProperties}>
             <span className="token-mark" aria-hidden="true">{cell === 1 ? "·" : "="}</span>
           </span>}
         </div>;
