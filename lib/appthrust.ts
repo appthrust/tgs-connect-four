@@ -53,13 +53,20 @@ const ATTEMPT_TIMEOUT_MS = 20_000;
 const TOTAL_BUDGET_MS = 120_000;
 const RETRY_DELAY_MS = 1_000;
 
-async function call(path: string, body: object): Promise<ActorResult> {
+// `join`, `state` and `reset` are idempotent at the actor, so an attempt whose
+// outcome is unknown (edge 504, network error) can simply be restarted under a
+// new key instead of polling the in-flight server attempt to its 25 s end.
+// `drop` is not idempotent: keep its key so a completed turn is replayed.
+const IDEMPOTENT_METHODS: Partial<Record<GameMethod, true>> = { join: true, state: true, reset: true };
+
+async function call(path: string, body: { method: GameMethod }): Promise<ActorResult> {
   const base = required("PLATFORM_API_URL").replace(/\/$/, "");
   const project = encodeURIComponent(required("APPTHRUST_PROJECT_ID"));
   const type = encodeURIComponent(process.env.APPTHRUST_ACTOR_TYPE_ID || "connect-four");
   const url = `${base}/api/v1/projects/${project}/actor-types/${type}/actors${path}`;
   const payload = JSON.stringify(body);
   let idempotencyKey = crypto.randomUUID();
+  const restartable = IDEMPOTENT_METHODS[body.method] === true;
   const startedAt = Date.now();
   let lastError: BackendError = new BackendError("backend_unreachable", 503);
   while (true) {
@@ -87,7 +94,7 @@ async function call(path: string, body: object): Promise<ActorResult> {
       // 409 with the same key means the first attempt is still running
       // server-side after the edge dropped our connection; keep polling it.
       if (response.status !== 409 && response.status !== 502 && response.status !== 503 && response.status !== 504) throw new BackendError("actor_request_failed", 502);
-      if (response.status === 503) idempotencyKey = crypto.randomUUID();
+      if (response.status === 503 || (restartable && response.status === 504)) idempotencyKey = crypto.randomUUID();
       lastError = new BackendError(response.status === 503 || response.status === 409 ? "actor_unavailable" : "actor_request_failed", response.status === 503 || response.status === 409 ? 503 : 502);
     }
     if (Date.now() - startedAt + RETRY_DELAY_MS >= TOTAL_BUDGET_MS) throw lastError;
