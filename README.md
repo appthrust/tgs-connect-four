@@ -3,7 +3,7 @@
 A phone-friendly Connect Four game for the Tokyo Game Show booth. Two visitors
 join a queue, get a private match actor, and play on a live 7 × 6 board. A TV wall
 shows the matches created by this app process. English UI with light Japanese
-subtitles; no account, database, or browser-side Platform credentials.
+subtitles; PostgreSQL is optional for local development and required on AppThrust. When `DATABASE_URL` is absent, the mock development store remains in memory; the actor still owns each match's game state.
 
 ## Run locally
 
@@ -37,6 +37,7 @@ values as runtime environment variables/secrets, never build arguments or
 | Variable | Meaning |
 | --- | --- |
 | `ACTOR_BACKEND` | `platform-api` (default), or `mock` in development only. |
+| `DATABASE_URL` | PostgreSQL connection URL. Optional locally (in-memory fallback); required on AppThrust. `sslmode=require` enables TLS without certificate verification unless a CA is supplied. |
 | `PLATFORM_API_URL` | Platform API **origin**, for example `https://dashboard.appthrust.dev`. Do not append `/api/v1`. |
 | `APPTHRUST_PROJECT_ID` | Existing project containing the ActorType. Required for Platform mode. |
 | `APPTHRUST_ACTOR_TYPE_ID` | Existing ActorType serving the Connect Four fixture; defaults to `connect-four`. |
@@ -59,8 +60,7 @@ Phone → Next.js route handler → Platform API → actor gateway → match act
 1. `proxy.ts` issues an httpOnly `c4pid` cookie on the first visit. It is
    SameSite=Lax and Secure on HTTPS, including TLS terminated by a trusted proxy.
    The ingress must preserve the public Host and set/overwrite X-Forwarded-Proto.
-2. The single-process queue reserves two different players synchronously. It
-   allocates `match-<n>` using a counter initialized with `Date.now() % 100000`.
+2. The queue reserves two different players in PostgreSQL when `DATABASE_URL` is set (with an in-memory fallback when it is absent). It allocates `match-<n>` from the database sequence.
 3. `lib/appthrust.ts` mints a Keycloak `client_credentials` token server-side,
    reusing it until 60 seconds before expiry. Concurrent token requests share
    one in-flight mint. Token and upstream response bodies are never logged.
@@ -114,14 +114,7 @@ It follows `appthrust/sample-payment`: Node 24 slim dependency/build/runtime
 stages, `npm ci`, Next.js standalone output, copied public/static assets, and a
 non-root runtime user. The container starts `node server.js` on `0.0.0.0:3000`.
 
-**Run exactly one instance.** Matchmaking, the actor directory, and the TV index
-live in memory. Inactive unmatched queue entries expire after 45 seconds without
-polling. The directory retains this process's matches for the booth session.
-A restart loses that directory even if Platform actors retain their own state;
-this app does not rediscover old actors. The specified modulo-seeded counter is
-not a globally unique ID allocator: coordinate one process and do not restart
-into an existing ID range. This is a booth demo, not a multi-tenant matchmaking
-service or a hardened public identity system.
+**Run one or more instances.** Matchmaking and the TV index use PostgreSQL when configured; the database survives restarts and coordinates concurrent replicas. Inactive unmatched queue entries expire after 45 seconds without polling. The actor owns game state and is not replaced by the database. Without `DATABASE_URL`, local mock development intentionally uses a process-local fallback.
 
 ## Verification
 
