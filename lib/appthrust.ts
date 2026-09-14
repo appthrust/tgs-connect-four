@@ -39,29 +39,56 @@ async function accessToken(): Promise<string> {
   return tokenRequest;
 }
 
+// dashboard.appthrust.dev closes requests at its 15 s edge timeout (504
+// "upstream request timeout"), while a cold or re-activated actor can take
+// longer (fresh ≈6 s, re-activation after idle up to ≈40 s observed). Retry the
+// same logical operation with the SAME Idempotency-Key so a call that
+// completed server-side is replayed instead of re-executed (a second `drop`
+// would otherwise be rejected as not_your_turn).
+const ATTEMPT_TIMEOUT_MS = 20_000;
+const TOTAL_BUDGET_MS = 75_000;
+const RETRY_DELAY_MS = 1_000;
+
 async function call(path: string, body: object): Promise<ActorResult> {
-  try {
-    const base = required("PLATFORM_API_URL").replace(/\/$/, "");
-    const project = encodeURIComponent(required("APPTHRUST_PROJECT_ID"));
-    const type = encodeURIComponent(process.env.APPTHRUST_ACTOR_TYPE_ID || "connect-four");
-    const response = await fetch(`${base}/api/v1/projects/${project}/actor-types/${type}/actors${path}`, {
-      method: "POST", cache: "no-store", signal: AbortSignal.timeout(35_000),
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${await accessToken()}`, "Idempotency-Key": crypto.randomUUID() },
-      body: JSON.stringify(body),
-    });
-    if (!response.ok) {
+  const base = required("PLATFORM_API_URL").replace(/\/$/, "");
+  const project = encodeURIComponent(required("APPTHRUST_PROJECT_ID"));
+  const type = encodeURIComponent(process.env.APPTHRUST_ACTOR_TYPE_ID || "connect-four");
+  const url = `${base}/api/v1/projects/${project}/actor-types/${type}/actors${path}`;
+  const payload = JSON.stringify(body);
+  const idempotencyKey = crypto.randomUUID();
+  const startedAt = Date.now();
+  let lastError: BackendError = new BackendError("backend_unreachable", 503);
+  while (true) {
+    let response: Response | undefined;
+    try {
+      response = await fetch(url, {
+        method: "POST", cache: "no-store", signal: AbortSignal.timeout(ATTEMPT_TIMEOUT_MS),
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${await accessToken()}`, "Idempotency-Key": idempotencyKey },
+        body: payload,
+      });
+    } catch (error) {
+      if (error instanceof BackendError) throw error;
+      lastError = new BackendError("backend_unreachable", 503);
+    }
+    if (response) {
+      if (response.ok) {
+        const result = await response.json();
+        if (typeof result.reply?.ok !== "boolean" || result.reply?.state?.version !== 1 || !Array.isArray(result.reply.state.board) || typeof result.activation?.attempts !== "number" || typeof result.activation?.elapsedMs !== "number" || typeof result.activation?.coldStart !== "boolean") throw new BackendError("invalid_actor_reply");
+        return { reply: result.reply, activation: result.activation };
+      }
       if (response.status === 401 || response.status === 403) {
         cachedToken = undefined;
         throw new BackendError("backend_auth_failed", 503);
       }
-      throw new BackendError(response.status === 503 ? "actor_unavailable" : "actor_request_failed", response.status === 503 ? 503 : 502);
+      // 409 with the same key means the first attempt is still running
+      // server-side after the edge dropped our connection; keep polling it.
+      if (response.status !== 409 && response.status !== 502 && response.status !== 503 && response.status !== 504) throw new BackendError("actor_request_failed", 502);
+      lastError = new BackendError(response.status === 503 || response.status === 409 ? "actor_unavailable" : "actor_request_failed", response.status === 503 || response.status === 409 ? 503 : 502);
     }
-    const result = await response.json();
-    if (typeof result.reply?.ok !== "boolean" || result.reply?.state?.version !== 1 || !Array.isArray(result.reply.state.board) || typeof result.activation?.attempts !== "number" || typeof result.activation?.elapsedMs !== "number" || typeof result.activation?.coldStart !== "boolean") throw new BackendError("invalid_actor_reply");
-    return { reply: result.reply, activation: result.activation };
-  } catch (error) {
-    if (error instanceof BackendError) throw error;
-    throw new BackendError("backend_unreachable", 503);
+    if (Date.now() - startedAt + RETRY_DELAY_MS >= TOTAL_BUDGET_MS) throw lastError;
+    const { promise, resolve } = Promise.withResolvers<void>();
+    setTimeout(resolve, RETRY_DELAY_MS);
+    await promise;
   }
 }
 
