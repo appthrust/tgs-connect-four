@@ -16,6 +16,9 @@ export function GET(request: NextRequest) {
       let last = "";
       let heartbeatAt = Date.now();
       const send = (chunk: string) => controller.enqueue(encoder.encode(chunk));
+      // The publish gateway closes responses after ~15 s; ask the browser to
+      // reopen the stream almost immediately instead of its 3 s default.
+      send("retry: 300\n\n");
       while (!request.signal.aborted) {
         try {
           const payload = JSON.stringify(await wall());
