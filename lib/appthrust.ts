@@ -59,7 +59,7 @@ const RETRY_DELAY_MS = 1_000;
 // `drop` is not idempotent: keep its key so a completed turn is replayed.
 const IDEMPOTENT_METHODS: Partial<Record<GameMethod, true>> = { join: true, state: true, reset: true };
 
-async function call(path: string, body: { method: GameMethod }): Promise<ActorResult> {
+async function call(path: string, body: { method: GameMethod; actorId?: string; body: object }): Promise<ActorResult> {
   const base = required("PLATFORM_API_URL").replace(/\/$/, "");
   const project = encodeURIComponent(required("APPTHRUST_PROJECT_ID"));
   const type = encodeURIComponent(process.env.APPTHRUST_ACTOR_TYPE_ID || "connect-four");
