@@ -40,13 +40,17 @@ async function accessToken(): Promise<string> {
 }
 
 // dashboard.appthrust.dev closes requests at its 15 s edge timeout (504
-// "upstream request timeout"), while a cold or re-activated actor can take
-// longer (fresh ≈6 s, re-activation after idle up to ≈40 s observed). Retry the
-// same logical operation with the SAME Idempotency-Key so a call that
-// completed server-side is replayed instead of re-executed (a second `drop`
-// would otherwise be rejected as not_your_turn).
+// "upstream request timeout"), while activation can take longer: fresh ≈6 s,
+// but the direct materializer activates serially, so back-to-back matches
+// observed 14–34 s, and re-activation after idle up to ≈40 s. Retry the same
+// logical operation with the SAME Idempotency-Key so a call that completed
+// server-side is replayed instead of re-executed (a second `drop` would
+// otherwise be rejected as not_your_turn). A 503 is different: Platform API
+// gave up on activation and stored that failure under the key, so replaying
+// it can never succeed — rotate the key and start a fresh attempt (nothing was
+// applied to the actor, so this is safe for every method).
 const ATTEMPT_TIMEOUT_MS = 20_000;
-const TOTAL_BUDGET_MS = 75_000;
+const TOTAL_BUDGET_MS = 120_000;
 const RETRY_DELAY_MS = 1_000;
 
 async function call(path: string, body: object): Promise<ActorResult> {
@@ -55,7 +59,7 @@ async function call(path: string, body: object): Promise<ActorResult> {
   const type = encodeURIComponent(process.env.APPTHRUST_ACTOR_TYPE_ID || "connect-four");
   const url = `${base}/api/v1/projects/${project}/actor-types/${type}/actors${path}`;
   const payload = JSON.stringify(body);
-  const idempotencyKey = crypto.randomUUID();
+  let idempotencyKey = crypto.randomUUID();
   const startedAt = Date.now();
   let lastError: BackendError = new BackendError("backend_unreachable", 503);
   while (true) {
@@ -83,6 +87,7 @@ async function call(path: string, body: object): Promise<ActorResult> {
       // 409 with the same key means the first attempt is still running
       // server-side after the edge dropped our connection; keep polling it.
       if (response.status !== 409 && response.status !== 502 && response.status !== 503 && response.status !== 504) throw new BackendError("actor_request_failed", 502);
+      if (response.status === 503) idempotencyKey = crypto.randomUUID();
       lastError = new BackendError(response.status === 503 || response.status === 409 ? "actor_unavailable" : "actor_request_failed", response.status === 503 || response.status === 409 ? 503 : 502);
     }
     if (Date.now() - startedAt + RETRY_DELAY_MS >= TOTAL_BUDGET_MS) throw lastError;
