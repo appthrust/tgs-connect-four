@@ -1,12 +1,13 @@
 "use client";
 import { useEffect, useState } from "react";
+import type { ReactNode } from "react";
 import Link from "next/link";
 import { Board } from "./board";
 import type { WallSnapshot } from "@/lib/game";
 const STALE_MS = 6_000;
 const FALLBACK_POLL_MS = 2_000;
 
-export function Wall() {
+export function Wall({ scan }: { scan: ReactNode }) {
   const [wall, setWall] = useState<WallSnapshot | null>(null);
   const [error, setError] = useState(false);
   useEffect(() => {
@@ -35,7 +36,7 @@ export function Wall() {
     return () => { controller.abort(); events.close(); window.clearTimeout(timer); };
   }, []);
   return <main className="wall-layout">
-    <header className="wall-heading"><div><div className="wall-live"><span className="status-dot" />{error ? "RECONNECTING" : "LIVE FROM THE BOOTH"}{wall?.backend === "mock" && " · LOCAL SIMULATION"}</div><h1>The match wall<span>.</span></h1><p lang="ja">ここから生まれる、すべての対戦。</p></div><div className="spawn-total"><strong>{wall?.total ?? "—"}</strong><span>MATCHES SPAWNED</span></div></header>
+    <header className="wall-heading"><div><div className="wall-live"><span className="status-dot" />{error ? "RECONNECTING" : "LIVE FROM THE BOOTH"}{wall?.backend === "mock" && " · LOCAL SIMULATION"}</div><h1>The match wall<span>.</span></h1><p lang="ja">ここから生まれる、すべての対戦。</p></div>{scan}<div className="spawn-total"><strong>{wall?.total ?? "—"}</strong><span>MATCHES SPAWNED</span></div></header>
     {error && <p role="alert" className="error-message">Connection interrupted. Showing the last received boards.</p>}
     {!wall?.matches.length && <div className="wall-empty"><div className="four-mark" aria-hidden="true"><i /><i /><i /><i /></div><h2>{wall ? "The next great match starts with you." : "Connecting to the booth…"}</h2><Link href="/" className="primary-button">Find a match <span aria-hidden="true">↗</span></Link></div>}
     <div className="wall-grid">{wall?.matches.map((match) => {
