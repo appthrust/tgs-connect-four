@@ -2,12 +2,15 @@ import "server-only";
 import { headers } from "next/headers";
 import QRCode from "qrcode";
 
-/** Public origin of this request, honouring the trusted ingress's forwarded headers. */
+/**
+ * Public origin of this request. The ingress terminates TLS and reports the internal hop as
+ * `X-Forwarded-Proto: http`, and the public host only serves https, so every non-local host is https.
+ */
 async function publicOrigin(): Promise<string> {
   const h = await headers();
   const host = h.get("x-forwarded-host") ?? h.get("host") ?? "localhost:3000";
-  const proto = h.get("x-forwarded-proto") ?? (host.startsWith("localhost") ? "http" : "https");
-  return `${proto}://${host}`;
+  const local = /^(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/.test(host);
+  return `${local ? "http" : "https"}://${host}`;
 }
 
 /** Server-rendered QR code for this site's public URL: inline SVG, no client JavaScript. */
